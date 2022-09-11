@@ -1,0 +1,5 @@
+3RD PARTY LICENSES
+
+* compress (github.com/klauspost/compress)
+	Copyright 2012 The Go Authors, Copyright 2019 Klaus Post
+	BSD 3-Clause "New" or "Revised" License
