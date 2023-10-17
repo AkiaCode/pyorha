@@ -44,7 +44,7 @@ var argsPool = &sync.Pool{
 //
 // Args instance MUST NOT be used from concurrently running goroutines.
 type Args struct {
-	noCopy noCopy //nolint:unused,structcheck
+	noCopy noCopy
 
 	args []argsKV
 	buf  []byte
@@ -63,7 +63,6 @@ func (a *Args) Reset() {
 
 // CopyTo copies all args to dst.
 func (a *Args) CopyTo(dst *Args) {
-	dst.Reset()
 	dst.args = copyArgs(dst.args, a.args)
 }
 
@@ -371,9 +370,10 @@ func visitArgsKey(args []argsKV, f func(k []byte)) {
 func copyArgs(dst, src []argsKV) []argsKV {
 	if cap(dst) < len(src) {
 		tmp := make([]argsKV, len(src))
+		dstLen := len(dst)
 		dst = dst[:cap(dst)] // copy all of dst.
 		copy(tmp, dst)
-		for i := len(dst); i < len(tmp); i++ {
+		for i := dstLen; i < len(tmp); i++ {
 			// Make sure nothing is nil.
 			tmp[i].key = []byte{}
 			tmp[i].value = []byte{}
@@ -552,16 +552,55 @@ func decodeArgAppend(dst, src []byte) []byte {
 	}
 
 	idx := 0
-	if idxPercent == -1 {
+	switch {
+	case idxPercent == -1:
 		idx = idxPlus
-	} else if idxPlus == -1 {
+	case idxPlus == -1:
 		idx = idxPercent
-	} else if idxPercent > idxPlus {
+	case idxPercent > idxPlus:
 		idx = idxPlus
-	} else {
+	default:
 		idx = idxPercent
 	}
 
+	dst = append(dst, src[:idx]...)
+
+	// slow path
+	for i := idx; i < len(src); i++ {
+		c := src[i]
+		switch c {
+		case '%':
+			if i+2 >= len(src) {
+				return append(dst, src[i:]...)
+			}
+			x2 := hex2intTable[src[i+2]]
+			x1 := hex2intTable[src[i+1]]
+			if x1 == 16 || x2 == 16 {
+				dst = append(dst, '%')
+			} else {
+				dst = append(dst, x1<<4|x2)
+				i += 2
+			}
+		case '+':
+			dst = append(dst, ' ')
+		default:
+			dst = append(dst, c)
+		}
+	}
+	return dst
+}
+
+// decodeArgAppendNoPlus is almost identical to decodeArgAppend, but it doesn't
+// substitute '+' with ' '.
+//
+// The function is copy-pasted from decodeArgAppend due to the performance
+// reasons only.
+func decodeArgAppendNoPlus(dst, src []byte) []byte {
+	idx := bytes.IndexByte(src, '%')
+	if idx < 0 {
+		// fast path: src doesn't contain encoded chars
+		return append(dst, src...)
+	}
 	dst = append(dst, src[:idx]...)
 
 	// slow path
@@ -579,8 +618,6 @@ func decodeArgAppend(dst, src []byte) []byte {
 				dst = append(dst, x1<<4|x2)
 				i += 2
 			}
-		} else if c == '+' {
-			dst = append(dst, ' ')
 		} else {
 			dst = append(dst, c)
 		}
@@ -588,38 +625,20 @@ func decodeArgAppend(dst, src []byte) []byte {
 	return dst
 }
 
-// decodeArgAppendNoPlus is almost identical to decodeArgAppend, but it doesn't
-// substitute '+' with ' '.
-//
-// The function is copy-pasted from decodeArgAppend due to the performance
-// reasons only.
-func decodeArgAppendNoPlus(dst, src []byte) []byte {
-	idx := bytes.IndexByte(src, '%')
-	if idx < 0 {
-		// fast path: src doesn't contain encoded chars
-		return append(dst, src...)
-	} else {
-		dst = append(dst, src[:idx]...)
-	}
-
-	// slow path
-	for i := idx; i < len(src); i++ {
-		c := src[i]
-		if c == '%' {
-			if i+2 >= len(src) {
-				return append(dst, src[i:]...)
-			}
-			x2 := hex2intTable[src[i+2]]
-			x1 := hex2intTable[src[i+1]]
-			if x1 == 16 || x2 == 16 {
-				dst = append(dst, '%')
-			} else {
-				dst = append(dst, x1<<4|x2)
-				i += 2
-			}
-		} else {
-			dst = append(dst, c)
+func peekAllArgBytesToDst(dst [][]byte, h []argsKV, k []byte) [][]byte {
+	for i, n := 0, len(h); i < n; i++ {
+		kv := &h[i]
+		if bytes.Equal(kv.key, k) {
+			dst = append(dst, kv.value)
 		}
+	}
+	return dst
+}
+
+func peekArgsKeys(dst [][]byte, h []argsKV) [][]byte {
+	for i, n := 0, len(h); i < n; i++ {
+		kv := &h[i]
+		dst = append(dst, kv.key)
 	}
 	return dst
 }
